@@ -51,6 +51,122 @@ def create_dataloader_v1(txt,batch_size=4,context_length=120,stride=128,shuffle=
                          )
     return dataloader
 
+def generate_text(model,idx,context_length,new_token):
+    for _ in range(new_token):
+        idx=idx[:,-context_length:]
+        with torch.no_grad():
+            logits=model(idx)
+            
+        logits=logits[:,-1,:] #last token
+        probs=torch.softmax(logits,dim=-1)
+        next_word=torch.argmax(probs,dim=-1,keepdim=True)  #token position
+        idx=torch.cat((idx,next_word),dim=1)
+    return idx
+
+#loss
+
+#for calculating the loss of a single batch
+def loss_batch(inputs,target,model,device):
+    #lets move all varaible into the same device
+    inputs,target=inputs.to(device),target.to(device)
+    
+    with torch.no_grad():
+        logits=model(inputs)
+    loss=torch.nn.functional.cross_entropy(logits.flatten(0,1),target.flatten())
+    return loss
+
+#lets calculate the loss for the whole batch
+def total_loss_batches(dataloader,model,device,num_batches=None):
+    if(num_batches==None):
+        num_batches=len(dataloader)
+    else:
+        num_batches=min(num_batches,dataloader)
+    
+    #lets calculate the loss over batches
+    total_loss=0
+    for i,(inputs,target) in enumerate(dataloader):
+        if(i<num_batches):
+            loss=loss_batch(inputs,target,model,device)
+            total_loss+=loss.item()
+        else:
+            break
+    
+    total_loss=total_loss/num_batches
+    return total_loss
+
+
+#generate new tokens
+def generate_new_tokens(model,device,start_context,tokenizer,max_tokens):
+    model.eval()
+    ids=text_to_ids(start_context,tokenizer).to(device)
+    context_length=model.pos_emb.weight.shape[0]
+    new_ids=generate_text(model,ids,context_length,max_tokens)
+    
+    #convert idx into text
+    with torch.no_grad():
+        new_text=ids_to_text(new_ids,tokenizer)
+        
+    model.train()
+    print(f"\n {new_text}")
+
+
+def eval_mode(model,train_loader,val_loader,device,eval_batch):
+    model.eval()
+    with torch.no_grad():
+        train_loss=total_loss_batches(train_loader,device,num_batches=eval_batch)
+        eval_loss=total_loss_batches(val_loader,device,num_batches=eval_batch)
+    model.train()
+    return train_loss,eval_loss
+
+
+
+def model_trainer(train_dataloader,val_dataloader,device,train_epoch,eval_freq,eval_batch,val_epoch,model,start_context,max_tokens,tokenizer,optimizer):
+    #for trainig
+    num_tokens_seen=0
+    #tracking the tokens
+    track_tokens_seen=[]
+    
+    #eval_tokens_seen=[]
+    train_losses=[]
+    eval_losses=[]
+    
+    for epoch in range(train_epoch):
+        model.train()
+        for i,(inputs,targets) in enumerate(train_dataloader):
+            #train the model
+
+            optimizer.zero_grad()
+
+            #calculate the loss
+            loss=loss_batch(inputs,targets,model,device)
+
+            #backpropagation
+            loss.backward()
+
+            #model update
+            optimizer.step()
+
+           
+            num_tokens_seen+=inputs.numel()
+
+            if(i%eval_freq==0):
+                #for evaluation
+                train_loss,eval_loss=eval_mode(model,train_dataloader,val_dataloader,eval_batch)
+
+                #for recording
+                train_losses.append(train_loss)
+                eval_losses.append(eval_loss)
+                #the tokens
+                track_tokens_seen.append(num_tokens_seen)
+
+                print(f"for epoch: {epoch}:iteration {i}: train loss {train_losses}: eval loss {eval_losses}")
+            
+        
+        #lets generate the new tokens
+        generate_new_tokens(model,device,start_context,tokenizer,max_tokens)
+                
+    return train_losses,eval_losses,track_tokens_seen
+
 
 #EXTRAS
 def text_to_ids(text,tokenizer):
