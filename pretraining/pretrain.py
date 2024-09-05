@@ -70,8 +70,7 @@ def loss_batch(inputs,target,model,device):
     #lets move all varaible into the same device
     inputs,target=inputs.to(device),target.to(device)
     
-    with torch.no_grad():
-        logits=model(inputs)
+    logits=model(inputs)
     loss=torch.nn.functional.cross_entropy(logits.flatten(0,1),target.flatten())
     return loss
 
@@ -180,3 +179,36 @@ def text_to_ids(text,tokenizer):
 def ids_to_text(ids,tokenizer):
     #this converts the tokens ids into text
     return tokenizer.decode(ids.squeeze(dim=0).tolist())
+
+
+#for newer generating 
+def latest_generate(model,idx,context_length,new_token_length,device,temprature,topk):
+    idx_cont=idx[:,-context_length:] #2d inputs num of tokens by embeding dim
+    for _ in range(new_token_length):
+        with torch.no_grad():
+            logits=model(idx_cont)
+
+        #lets apply topk
+        logits=logits[:, -1, :]  #take only last tokens prediction
+        if(topk is not None):
+            top_logits,_=torch.topk(logits,k=topk)
+            min_value=top_logits[:,-1]
+            
+            logits=torch.where(
+                logits<min_value.unsqueeze(dim=-1),
+                torch.tensor(float('-inf')).to(device),
+                logits
+            )
+        
+        #lets apply multinomial
+        if(temprature>0.0):
+            logits=logits/temprature
+            probs=torch.softmax(logits,dim=-1)
+            next_token=torch.multinomial(probs,num_samples=1)
+        else:
+            probs=torch.softmax(logits,dim=-1)
+            next_token=torch.argamax(probs,dim=-1,keepdim=True)
+            
+        idx=torch.cat((idx,next_token),dim=1)
+    
+    return idx
